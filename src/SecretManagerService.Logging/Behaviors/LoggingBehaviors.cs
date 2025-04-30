@@ -1,49 +1,49 @@
+
 using MediatR;
-using Serilog;
-using SecretManagerService.Logging.Models;
-using System.Diagnostics;
-using System.Threading.Tasks;
-using System.Threading;
+using Microsoft.Extensions.Logging;
 using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.Threading;
+using System.Threading.Tasks;
 
-namespace SecretManagerService.Logging.Behaviors
+public class LoggingBehavior<TRequest, TResponse> : IPipelineBehavior<TRequest, TResponse>
 {
-    public class LoggingBehavior<TRequest, TResponse> : IPipelineBehavior<TRequest, TResponse>
+    private readonly ILogger<LoggingBehavior<TRequest, TResponse>> _logger;
+    private readonly IHttpContextAccessor _httpContextAccessor;
+
+    public LoggingBehavior(ILogger<LoggingBehavior<TRequest, TResponse>> logger, IHttpContextAccessor httpContextAccessor)
     {
-        public async Task<TResponse> Handle(TRequest request, RequestHandlerDelegate<TResponse> next, CancellationToken cancellationToken)
+        _logger = logger;
+        _httpContextAccessor = httpContextAccessor;
+    }
+
+    public async Task<TResponse> Handle(TRequest request, RequestHandlerDelegate<TResponse> next, CancellationToken cancellationToken)
+    {
+        var stopwatch = Stopwatch.StartNew();
+        var context = _httpContextAccessor.HttpContext;
+        var correlationId = context?.TraceIdentifier ?? Guid.NewGuid().ToString();
+
+        // Extrair propriedades marcadas com [LogField]
+        var campos = new Dictionary<string, string>();
+        foreach (var prop in request.GetType().GetProperties())
         {
-            var requestName = typeof(TRequest).Name;
-            var stopwatch = Stopwatch.StartNew();
-            var logEntry = new LogEntry
+            if (Attribute.IsDefined(prop, typeof(LogFieldAttribute)))
             {
-                RequestName = requestName,
-                Request = request
-            };
-
-            try
-            {
-                var response = await next();
-                stopwatch.Stop();
-
-                logEntry.Success = true;
-                logEntry.ElapsedTime = stopwatch.Elapsed;
-
-                Log.Information("Request completed successfully {@LogEntry}", logEntry);
-
-                return response;
-            }
-            catch (Exception ex)
-            {
-                stopwatch.Stop();
-
-                logEntry.Success = false;
-                logEntry.ElapsedTime = stopwatch.Elapsed;
-                logEntry.ErrorMessage = ex.Message;
-
-                Log.Error(ex, "Request failed {@LogEntry}", logEntry);
-
-                throw;
+                var value = prop.GetValue(request)?.ToString();
+                if (!string.IsNullOrEmpty(value))
+                {
+                    campos[prop.Name] = value;
+                }
             }
         }
+
+        context?.Items.TryAdd("CamposLogaveis", campos);
+
+        _logger.LogInformation("Iniciando {Handler} | CorrelationId: {CorrelationId}", typeof(TRequest).Name, correlationId);
+        var response = await next();
+        stopwatch.Stop();
+        _logger.LogInformation("Finalizado {Handler} em {Tempo}ms | CorrelationId: {CorrelationId}", typeof(TRequest).Name, stopwatch.ElapsedMilliseconds, correlationId);
+        return response;
     }
 }
